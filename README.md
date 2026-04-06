@@ -96,13 +96,13 @@ Any constraint violation triggers automatic rejection, regardless of reported pe
 
 The project proceeded in two phases. In the human-guided phase, PPO training from scratch reached a ceiling at approximately 40% over 6 training runs spanning several weeks. After establishing a DAgger baseline at the same level, the autonomous system was engaged. The agent autonomously discovered several improvements that the researcher had not considered:
 
-| Discovery | Impact | Mechanism |
-|---|---|---|
-| 2-layer LSTM architecture | +3.3 pp | Increased temporal modeling capacity |
-| Dataset buffer sizing (maxlen 5→25) | Major | More diverse training distribution |
-| 3-phase learning rate schedule | Significant | Progressive refinement over 200 rounds |
-| Loss weighting [15,15,0.1,1] | Moderate | Emphasis on roll/pitch over yaw |
-| Cosine LR annealing | Modest | Smoother convergence |
+| Discovery | Impact | Cumulative | Mechanism |
+|---|---|---|---|
+| 2-layer LSTM architecture | +3.3 pp | 43.3% | Increased temporal modeling capacity |
+| Dataset buffer sizing (maxlen 5→15) | +15.7 pp | 59.0% | More diverse training distribution |
+| Staged LR decay (7e-5→1.4e-5) | +1.0 pp | 60.0% | Progressive refinement over 150 rounds |
+| Loss weighting [15,15,0.1,1] + maxlen 20 | +5.7 pp | 65.7% | Emphasis on roll/pitch over yaw |
+| 3-phase LR schedule + maxlen 25 | +7.6 pp | 73.3% | Full recipe: 200 rounds, 3-phase decay |
 
 Equally valuable were the negative results, which prevented the researcher from pursuing dead ends:
 
