@@ -1,232 +1,157 @@
-# Autonomous Research Agent for Drone Flight Control
+# LLM-Driven Autonomous Research for Flight Controller Optimization
 
-**How I used Claude Code as an autonomous research agent to improve a neural flight controller from 40% to 73.3% hit rate — while I worked on other things.**
-
-[![Claude Code](https://img.shields.io/badge/Agent-Claude%20Code-blueviolet.svg)](https://claude.ai/claude-code)
-[![Results](https://img.shields.io/badge/Hit%20Rate-73.3%25-brightgreen.svg)](#results)
-[![Hardware](https://img.shields.io/badge/GPU-RTX%204000%20Ada-76b900.svg)](#hardware)
+A system for automated experiment design, execution, and evaluation using large language model agents. Applied to neural drone flight controller training, the system improved intercept performance from 40.0% to 73.3% without human intervention.
 
 ---
 
-## The Problem
+## Abstract
 
-I was training a neural network to fly a drone — specifically, to intercept a fast-moving aerial target using only a camera and gyroscope. No GPS, no range sensor. Just bounding box detections from YOLO and angular rates from an IMU.
+We describe an autonomous research system in which an LLM agent (Claude Code) iteratively designs, implements, deploys, trains, and evaluates machine learning experiments on remote GPU infrastructure. The system operates in a continuous loop: each iteration proposes a single modification, trains on a fixed compute budget, compares against the current best, and either merges the improvement or reverts the change. A persistent research context file accumulates findings across iterations, giving each new agent instance the full institutional memory of the research program.
 
-After weeks of manual experimentation with PPO (reinforcement learning from scratch), I had plateaued at **40.5% hit rate**. The classical expert controller (proportional navigation) achieved 83.3%. I was stuck, and I had other things to work on.
+Applied to a vision-based drone intercept task, the system executed experiments across two parallel GPUs and improved the deployed policy from a 40.0% baseline to **73.3% intercept rate** — a +33.3 percentage point gain achieved autonomously while the researcher focused on other work.
 
-So I built a system that let me deploy a baseline, provide research guidelines, and **let an LLM agent autonomously run experiments 24/7** — hypothesizing, implementing, training, evaluating, and iterating without any human in the loop.
+## Key Results
 
-**The result: 73.3% hit rate. A +33 percentage point improvement, achieved autonomously.**
+| Metric | Value |
+|---|---|
+| Baseline (human-established) | 40.0% |
+| Best autonomous result | 73.3% |
+| Expert ceiling | 83.3% |
+| Autonomous improvement | +33.3 pp |
+| Gap closed | 77% of baseline-to-expert gap |
+| Parallel GPU utilization | 2 GPUs, ~6 experiments / 4 hours |
 
 ---
 
-## How It Works
+## System Architecture
+
+### The Autonomous Loop
 
 <p align="center">
-  <img src="assets/loop_diagram.png" alt="Autonomous Research Loop" width="100%">
+  <img src="assets/loop_diagram.png" alt="Fig 3" width="100%">
 </p>
 
-The system runs a continuous loop where each iteration is a complete scientific experiment:
+Each iteration executes a complete experimental cycle:
 
-### 1. Read Context & History
-The agent reads a persistent `research_context.md` file that accumulates all prior findings — what worked, what failed, and why. It also reads `experiment_history.tsv` for quantitative results across all prior experiments. This gives each new agent instance the full institutional memory of the research program.
+1. **Read context.** The agent loads `research_context.md` (accumulated findings from all prior experiments) and `experiment_history.tsv` (quantitative results). This provides institutional memory without requiring persistent agent state.
 
-### 2. Hypothesize & Implement
-Based on the accumulated context and a `CLAUDE.md` file specifying constraints and the search space, the agent forms a hypothesis ("2-layer LSTM should help because the single-layer can't capture temporal dependencies at this complexity") and implements exactly **one change** to isolate its effect.
+2. **Hypothesize.** Based on accumulated context, the agent identifies the most promising modification. A `CLAUDE.md` file provides hard constraints (immutable physics, domain randomization lower bounds, scenario parameters) and the search space. Exactly one change is implemented per iteration to isolate causal effects.
 
-### 3. Deploy to GPU
-The agent SSHs into a remote GPU server, SCPs the modified source files, rebuilds the C physics simulator, and runs a verification test suite (40 physics + projection tests) to ensure nothing broke.
+3. **Deploy.** Modified source files are transferred to a remote GPU server via SCP. The C physics simulator is rebuilt, and a 40-test verification suite runs to catch regressions before training.
 
-### 4. Train
-Training runs on the remote GPU with a fixed budget — either 500K PPO steps (~8 min) or 60 DAgger rounds (~45 min). Fixed budgets ensure fair comparison across experiments and enable ~7 experiments per hour.
+4. **Train.** Training executes on the GPU with a fixed compute budget (500K PPO steps or 60 DAgger rounds). Fixed budgets ensure fair comparison across experiments and predictable throughput.
 
-### 5. Extract Metrics & Compare
-The agent extracts metrics from TensorBoard events (or training logs), computes the primary metric (hit rate on randomized evaluation scenarios), and compares against the current best.
+5. **Evaluate.** Metrics are extracted from TensorBoard event files on the remote server. The primary metric (hit rate on randomized evaluation) is compared against the current best.
 
-### 6. KEEP or DISCARD
-Binary decision. If the hit rate improved: **KEEP** — merge the change into the main branch (git as ratchet). If not: **DISCARD** — revert all changes. No fuzzy "looks promising." Numbers only.
+6. **Keep or discard.** Binary decision. Improvement → merge into main branch. No improvement → revert all changes. The codebase can only improve (ratchet mechanism).
 
-### 7. Update Context & Repeat Forever
-The agent writes what it learned to the persistent context file, logs the result to `experiment_history.tsv`, and immediately starts the next experiment. **No pause. No human approval needed.**
+The loop then repeats indefinitely.
+
+### Parallel Execution
+
+<p align="center">
+  <img src="assets/timeline.png" alt="Fig 1" width="100%">
+</p>
+
+A single orchestrator manages two independent GPU servers. Each runs a full experiment pipeline in its own git worktree, preventing code contamination between concurrent experiments. The orchestrator monitors training progress via SSH, detects stalls (10-minute inactivity threshold), and manages experiment lifecycle.
+
+| Resource | Specification |
+|---|---|
+| GPU 1 | NVIDIA RTX 4000 Ada (20 GB), Hetzner cloud |
+| GPU 2 | University lab server |
+| Orchestrator | macOS (Apple Silicon) |
+| Experiment duration | ~45 min (DAgger) or ~8 min (PPO) |
+| Throughput | ~1.3/hour (DAgger) or ~7/hour (PPO) |
+
+### Adaptive Research Strategy
+
+The system adjusts its exploration strategy based on consecutive failure count:
+
+| Failures | Mode | Behavior |
+|---|---|---|
+| 0–2 | Incremental | Small modifications building on current best |
+| 3–4 | Pivot | Switch to a different search category |
+| 5+ | Exploration | Search literature for novel techniques |
+
+### Constraint Enforcement
+
+Hard constraints prevent metric inflation:
+
+- Physics constants (mass, inertia, thrust coefficients) are immutable
+- Domain randomization ranges can only increase, not decrease
+- Scenario parameters (target speed, distance, hit radius) are fixed
+- Camera field-of-view limits are fixed
+
+Any constraint violation triggers automatic rejection, regardless of reported performance.
 
 ---
 
 ## Results
 
-<p align="center">
-  <img src="assets/progression.png" alt="Progression from Human to Autonomous" width="100%">
-</p>
-
-### The Numbers
-
-| Phase | Approach | Best Hit Rate | Who Did the Work |
-|---|---|---|---|
-| Manual PPO | RL from scratch, hand-tuned | 40.5% | Me, over weeks |
-| DAgger Baseline | Imitation learning, initial setup | 40.0% | Me, 1 day setup |
-| Autonomous Research | Agent-driven iteration | **73.3%** | Claude Code, autonomously |
-| Expert Ceiling | Classical proportional navigation | 83.3% | Optimal control theory |
-
-**The agent closed 69% of the gap between the baseline and the expert ceiling — autonomously.**
-
-### Key Breakthroughs Found by the Agent
-
-The agent discovered several improvements that I had not tried or had overlooked:
-
-1. **2-layer LSTM** (+3.3pp) — architecture depth matters for temporal reasoning over bounding box sequences
-2. **Cosine learning rate annealing** — smoother convergence than flat LR schedule
-3. **Dataset buffer size** (maxlen=25 vs 5) — the single biggest lever, letting the model train on more diverse past experience
-4. **3-phase learning rate schedule** (7e-5 → 1.5e-5 → 5e-6) — progressive refinement across 200 DAgger rounds
-5. **Loss weighting** [15, 15, 0.1, 1] — the agent discovered that roll/pitch matter far more than yaw for interception
-
-### What the Agent Learned NOT to Do
-
-Equally valuable — the agent saved me time by ruling out dead ends:
-
-- Episode boundary splitting in BPTT (29.3% — catastrophic regression)
-- Inter-layer dropout between LSTM layers (40.7% — hurt performance)
-- Zero entropy coefficient (premature convergence, policy gets stuck)
-- Quadratic terminal reward bonus (made optimization landscape harder)
-- Aggressive curriculum transitions (caused catastrophic forgetting)
-
----
-
-## Parallel Execution on Dual GPUs
+### Research Progression
 
 <p align="center">
-  <img src="assets/timeline.png" alt="Dual GPU Timeline" width="100%">
+  <img src="assets/progression.png" alt="Fig 2" width="100%">
 </p>
 
-A single orchestrator manages two independent GPU servers running experiments in parallel:
+The project proceeded in two phases. In the human-guided phase, PPO training from scratch reached a ceiling at approximately 40% over 6 training runs spanning several weeks. After establishing a DAgger baseline at the same level, the autonomous system was engaged. The agent autonomously discovered several improvements that the researcher had not considered:
 
-- **GPU 1** (Hetzner cloud, NVIDIA RTX 4000 Ada, 20GB VRAM) — primary research track
-- **GPU 2** (university lab server) — parallel exploration track
+| Discovery | Impact | Mechanism |
+|---|---|---|
+| 2-layer LSTM architecture | +3.3 pp | Increased temporal modeling capacity |
+| Dataset buffer sizing (maxlen 5→25) | Major | More diverse training distribution |
+| 3-phase learning rate schedule | Significant | Progressive refinement over 200 rounds |
+| Loss weighting [15,15,0.1,1] | Moderate | Emphasis on roll/pitch over yaw |
+| Cosine LR annealing | Modest | Smoother convergence |
 
-Each GPU runs a full experiment pipeline independently. The orchestrator:
-- Assigns experiments to idle GPU slots
-- Creates isolated git worktrees for each experiment (no code contamination)
-- Monitors training progress via SSH (detects stalls, kills hung workers)
-- Collects results and updates the shared experiment history
-- Merges improvements into the main branch
+Equally valuable were the negative results, which prevented the researcher from pursuing dead ends:
 
-**6 complete experiments in 4 hours** with full parallel utilization. At the PPO experiment rate (~7/hour), this system can run **~170 experiments overnight**.
-
----
-
-## The Infrastructure
-
-### Orchestrator (`auto_research_v5.sh`)
-
-The orchestrator evolved through 5 iterations:
-
-| Version | Key Innovation |
-|---|---|
-| v1 | Basic single-GPU loop |
-| v2 | Persistent `research_context.md` for accumulated knowledge |
-| v3 | Adaptive modes: incremental → pivot → exploration (based on failure count) |
-| v4 | macOS compatibility, stall detection, better error handling |
-| v5 | **Dual GPU orchestration**, per-GPU slot tracking, code contamination prevention |
-
-### Adaptive Research Modes
-
-The system adapts its strategy based on consecutive failures:
-
-- **Incremental mode** (0-2 failures): Small changes building on current best
-- **Pivot mode** (3-4 failures): Switch to a completely different approach category
-- **Exploration mode** (5+ failures): Use web search to find novel techniques from papers
-
-### Constraint Enforcement
-
-Hard constraints prevent the agent from inflating results:
-
-```
-Physics constants (mass, inertia, thrust)     → IMMUTABLE
-Domain randomization ranges                    → Can only INCREASE
-Scenario difficulty (target speed, distance)   → FIXED
-Camera FOV limits                              → FIXED
-Hit detection radius                           → FIXED (0.3m)
-```
-
-Any constraint violation → automatic **REJECT**, even if hit rate improved.
-
-### Communication via File System
-
-Rather than complex APIs, the system uses files for agent communication:
-
-- `CLAUDE.md` → Instructions, constraints, search space, recent history (written by orchestrator, read by agent)
-- `experiment_result.json` → Results (written by agent, read by orchestrator)
-- `research_context.md` → Accumulated knowledge (append-only, persists across all agents)
-- `experiment_history.tsv` → Quantitative log of every experiment ever run
-
-Each Claude Code instance starts fresh but inherits the full research history through these files.
+| Attempted | Outcome | Lesson |
+|---|---|---|
+| Episode boundary splitting in BPTT | −10.7 pp | Disrupts temporal learning |
+| Inter-layer LSTM dropout | −2.6 pp | Regularization harmful in this regime |
+| Zero entropy coefficient | Premature convergence | Exploration required throughout training |
+| Curriculum stage 4 (full difficulty) | Catastrophic forgetting | Difficulty transitions must be gradual |
 
 ---
 
-## What Makes This Work
+## Design Principles
 
-### 1. Git as Ratchet
-Only improvements are merged. The codebase can only get better. Every commit message is an experiment summary, so `git log` reads like a research journal.
+**Fixed compute budgets.** Every experiment receives identical compute, enabling fair comparison and predictable throughput. No "run it longer to see" — the fixed window enforces disciplined evaluation.
 
-### 2. Fixed-Budget Experiments
-Every experiment gets exactly the same compute budget. No "let it run longer to see if it catches up." This enables fair comparison and predictable throughput.
+**Git as ratchet.** Only improvements are merged. The git history becomes a readable research journal where each commit message summarizes an experiment and its outcome.
 
-### 3. Persistent Research Memory
-Each agent writes what it learned — both successes and failures — to a shared context file. The next agent reads this and builds on it. Knowledge compounds across agents.
+**Persistent research memory.** Each agent writes findings to a shared context file. Subsequent agents read this context, enabling knowledge accumulation across stateless agent instances.
 
-### 4. One Change Per Experiment
-Strict isolation. If something improves, you know exactly what caused it. If it regresses, you know exactly what to revert.
+**Single-variable experiments.** One change per iteration. If performance improves, the cause is unambiguous. If it degrades, revert is clean.
 
-### 5. The "Never Stop" Philosophy
-Inspired by [Karpathy's autoresearch](https://x.com/karpathy/status/1886192184808149383) concept. The agent doesn't ask for permission, doesn't wait for review, doesn't pause between experiments. It just keeps going. 7 experiments per hour, 170 overnight, indefinitely.
+**File-based communication.** The orchestrator writes `CLAUDE.md` (instructions, constraints, history). The agent writes `experiment_result.json` (metrics, description, learnings). No API integration required — agents read and write files.
 
 ---
 
-## Hardware
+## Practical Implications
 
-| Component | Spec |
-|---|---|
-| GPU 1 (training) | NVIDIA RTX 4000 Ada, 20GB VRAM |
-| GPU 2 (training) | University lab GPU server |
-| Orchestrator | MacBook Pro (Apple Silicon) |
-| Physics Sim | Custom C, ~200K steps/sec per env |
-| Training Time | ~8 min/experiment (PPO) or ~45 min (DAgger) |
-| Experiment Rate | ~7/hour (PPO) or ~1.3/hour (DAgger) |
+The system does not replace the researcher. The researcher designed the simulation, chose the training approach, defined constraints, and validated the deployed model. What the system automates is the iterative cycle of hypothesis → implementation → training → evaluation that dominates experimental machine learning workflows.
 
----
-
-## Why This Matters
-
-### For me personally
-I deployed the baseline on a Sunday evening and went to bed. By Monday morning, the agent had run multiple experiments and found a +3.3pp improvement. Over the following days, it continued iterating — finding the dataset buffer size insight, the learning rate schedule, the loss weighting — while I worked on hardware integration, paper writing, and other projects.
-
-**Autonomous research doesn't replace the researcher. It multiplies them.** I still designed the system, chose the approach, set the constraints, and validated the results. But the tedious cycle of "change one thing → train → wait → evaluate → repeat" was fully automated.
-
-### For the field
-This is a proof of concept that LLM agents can perform meaningful scientific iteration — not just code generation, but the full loop of hypothesis formation, implementation, execution, analysis, and knowledge accumulation. The agent discovered non-obvious insights (loss weighting, buffer size effects) that I hadn't considered.
-
-The key ingredients are:
-1. **A well-defined metric** (hit rate on randomized evaluation)
-2. **Clear constraints** (what can and cannot be changed)
-3. **Fast feedback** (8-45 min per experiment)
-4. **Persistent memory** (research context that compounds)
-5. **A ratchet mechanism** (git merge only on improvement)
+The approach is effective when:
+- A well-defined scalar metric exists (hit rate on randomized evaluation)
+- Experiments are fast relative to the search space (~45 min per experiment)
+- Hard constraints can be specified to prevent degenerate solutions
+- The search space is bounded but too large for exhaustive exploration
 
 ---
 
 ## Related Work
 
-- [Karpathy's Autoresearch](https://x.com/karpathy/status/1886192184808149383) — the philosophical inspiration for fixed-budget, never-stop autonomous research
-- [The AI Scientist](https://arxiv.org/abs/2408.06292) — Sakana AI's system for autonomous paper writing and review
-- [FunSearch](https://www.nature.com/articles/s41586-023-06924-6) — DeepMind's LLM-driven mathematical discovery
-- [Claude Code](https://claude.ai/claude-code) — the LLM agent used as the research executor
+- Ross, S., Gordon, G., & Bagnell, D. (2011). A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning. *AISTATS*.
+- Lu, C., et al. (2024). The AI Scientist: Towards Fully Automated Open-Ended Scientific Discovery. *Sakana AI*.
+- Romera-Paredes, B., et al. (2024). Mathematical Discoveries from Program Search with Large Language Models. *Nature*.
+- Karpathy, A. (2025). Autoresearch. Concept for fixed-budget autonomous experiment loops.
 
----
+## Repository
 
-## Repository Structure
-
-This repository documents the autonomous research methodology. The flight controller itself is in a [separate repository](https://github.com/J3ykob/rl-drone-flight-controller).
-
----
+This repository documents the autonomous research methodology. The flight controller and simulation environment are described in a [separate repository](https://github.com/J3ykob/rl-drone-flight-controller).
 
 ## License
 
-MIT — the methodology is open. The trained models and flight controller code are proprietary (see the [flight controller repo](https://github.com/J3ykob/rl-drone-flight-controller)).
+MIT.
